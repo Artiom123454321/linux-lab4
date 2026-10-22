@@ -224,15 +224,16 @@ not_passed() {
     printf 'Всего не сдали: %s\n' "$count"
 }
 
-# Читаем каждый TEST-* ровно один раз — вместо перечитывания для каждого студента.
-# subject_id: 0 — оба предмета, 1 или 2 — выбранный.
+# Средний балл по ВСЕМ попыткам (включая неудачные), а не лучшая/итоговая оценка.
+# Один тест может содержать несколько попыток одного студента.
+# Каждый файл читаем один раз, в массивы накапливаем сумму и количество попыток.
 ranking() {
-    local group="$1" subject_id="${2:-0}" student subject test grade total=0 successful=0 sum=0
-    local num_tests max_score index
+    local group="$1" subject_id="${2:-0}" student subject test path g date correct grade base
+    local n sum rounded mean key
     validate_rank_subject "$subject_id" || return 1
     group=$(resolve_group "$group") || return 1
     local -a students=() subjects=()
-    local -A roster=() scores=() unused=()
+    local -A roster=() sums=() counts=()
     if [[ "$subject_id" == 0 ]]; then subjects=("${SUBJECTS[@]}"); else subjects=("${SUBJECTS[subject_id-1]}"); fi
     while IFS= read -r student || [[ -n "$student" ]]; do
         [[ -n "$student" ]] || continue
@@ -240,33 +241,49 @@ ranking() {
     done < "$GROUP_DIR/$group"
     for subject in "${subjects[@]}"; do
         for test in 1 2 3 4; do
-            scan_test "$group" "$subject" "$test" 0 scores unused roster "$subject|$test|" || return 1
+            path="$DATA/$subject/tests/TEST-$test"
+            [[ -f "$path" ]] || { printf 'Ошибка: нет файла теста %s\n' "$path" >&2; return 1; }
+            while IFS=';' read -r g student date correct grade || [[ -n "$grade" ]]; do
+                [[ "$g" == "$group" && -v 'roster[$student]' ]] || continue
+                if [[ "$grade" =~ ^([2-5])[+-]*$ ]]; then
+                    base="${BASH_REMATCH[1]}"
+                    sums["$student"]=$(( ${sums["$student"]:-0} + base ))
+                    counts["$student"]=$(( ${counts["$student"]:-0} + 1 ))
+                fi
+            done < "$path"
         done
     done
-    num_tests=$((${#subjects[@]}*4)); max_score=$((num_tests*5))
-    printf 'Рейтинг группы %s; предмет: %s; тестов: %s\n' "$group" "$(if [[ "$subject_id" == 0 ]]; then printf 'оба'; else printf '%s' "${subjects[0]}"; fi)" "$num_tests"
+    printf 'Рейтинг группы %s; предмет: %s\n' "$group" "$(if [[ "$subject_id" == 0 ]]; then printf 'оба'; else printf '%s' "${subjects[0]}"; fi)"
+    printf '%-26s %-9s %s\n' 'Студент' 'Средняя' 'Попытки'
     {
         for student in "${students[@]}"; do
-            sum=0; successful=0
-            for subject in "${subjects[@]}"; do
-                for test in 1 2 3 4; do
-                    grade="${scores["$subject|$test|$student"]:-0}"
-                    ((sum+=grade))
-                    ((grade>=3)) && ((successful+=1))
-                done
-            done
-            printf '%d;%s;%d\n' "$sum" "$student" "$successful"
+            sum="${sums["$student"]:-0}"; n="${counts["$student"]:-0}"
+            if ((n>0)); then
+                # Среднее для сортировки с точностью до 6 знаков,
+                # для отображения округляем до двух знаков.
+                key=$((sum*1000000/n))
+                rounded=$(((sum*100 + n/2)/n))
+                printf '%d;%s;%d;%d\n' "$key" "$student" "$rounded" "$n"
+            else
+                printf '%d;%s;%d;%d\n' '-1' "$student" '-1' 0
+            fi
         done
-    } | LC_ALL=C sort -t';' -k1,1nr -k2,2 | while IFS=';' read -r sum student successful; do
-        printf '%-24s %2d / %-2d   %d.%02d / 5   сдано: %d/%d\n' \
-            "$student" "$sum" "$max_score" "$((sum/num_tests))" "$(((sum%num_tests)*100/num_tests))" "$successful" "$num_tests"
+    } | LC_ALL=C sort -t';' -k1,1nr -k2,2 | while IFS=';' read -r key student rounded n; do
+        if ((n>0)); then
+            printf '%-26s %d.%02d      %d\n' "$student" "$((rounded/100))" "$((rounded%100))" "$n"
+        else
+            printf '%-26s %-9s %d\n' "$student" '-' 0
+        fi
     done
 }
 
 # Считает взвешенную посещаемость одной группы, устанавливает два числа.
 # Проходим файлы посещаемости один раз, учитывая только студентов из списка группы.
 calculate_group_attendance() {
-    local group="$1" subject student bits extra path n total numbers value
+    local group="$1" subject_id="${2:-0}" subject student bits extra path n total numbers value
+    local -a selected_subjects=()
+    validate_rank_subject "$subject_id" || return 1
+    if [[ "$subject_id" == 0 ]]; then selected_subjects=("${SUBJECTS[@]}"); else selected_subjects=("${SUBJECTS[subject_id-1]}"); fi
     local -A roster=() seen=()
     local roster_count=0
     AVG_ATTENDED=0; AVG_POSSIBLE=0
@@ -274,7 +291,7 @@ calculate_group_attendance() {
         [[ -n "$student" ]] || continue
         roster["$student"]=1; ((roster_count+=1))
     done < "$GROUP_DIR/$group"
-    for subject in "${SUBJECTS[@]}"; do
+    for subject in "${selected_subjects[@]}"; do
         path="$DATA/$subject/$group-attendance"
         [[ -f "$path" ]] || { printf 'Ошибка: отсутствует файл %s\n' "$path" >&2; return 1; }
         local count=0
@@ -295,8 +312,9 @@ calculate_group_attendance() {
 }
 
 average_attendance_mode() {
-    local mode="$1" value group year number path
-    shift
+    local mode="$1" subject_id="$2" value group year number path
+    shift 2
+    validate_rank_subject "$subject_id" || return 1
     local -a selected=()
     local -A found=()
     local sum_attended=0 sum_possible=0
@@ -325,10 +343,15 @@ average_attendance_mode() {
         *) echo 'Ошибка: неизвестный режим средней посещаемости.' >&2; return 1 ;;
     esac
     ((${#selected[@]} > 0)) || { echo 'Ошибка: для запроса нет групп.' >&2; return 1; }
+    if [[ "$subject_id" == 0 ]]; then
+        printf 'Предмет: оба\n'
+    else
+        printf 'Предмет: %s\n' "${SUBJECTS[subject_id-1]}"
+    fi
     if [[ "$mode" == year ]]; then printf 'Группы года %s:\n' "$year"; fi
     if [[ "$mode" == number ]]; then printf 'Группы с номером %s (все годы):\n' "$number"; fi
     for group in "${selected[@]}"; do
-        calculate_group_attendance "$group" || return 1
+        calculate_group_attendance "$group" "$subject_id" || return 1
         ((sum_attended+=AVG_ATTENDED, sum_possible+=AVG_POSSIBLE))
         if ((AVG_POSSIBLE>0)); then
             printf '%s: %d из %d (%d.%02d%%)\n' "$group" "$AVG_ATTENDED" "$AVG_POSSIBLE" \
@@ -347,4 +370,4 @@ average_attendance_mode() {
     fi
 }
 
-average_attendance() { average_attendance_mode exact "$@"; }
+average_attendance() { average_attendance_mode exact 0 "$@"; }
