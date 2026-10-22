@@ -254,7 +254,10 @@ ranking() {
         done
     done
     printf 'Рейтинг группы %s; предмет: %s\n' "$group" "$(if [[ "$subject_id" == 0 ]]; then printf 'оба'; else printf '%s' "${subjects[0]}"; fi)"
-    printf '%-26s %-9s %s\n' 'Студент' 'Средняя' 'Попытки'
+    # Для заголовка используем явные пробелы: Bash printf считает ширину
+    # кириллических надписей в байтах, поэтому %-26s сбивает колонки.
+    # Заголовок и данные начинаются на одинаковых позициях терминала.
+    printf 'Студент%19s  Средняя оценка%1s  Попытки\n' '' ''
     {
         for student in "${students[@]}"; do
             sum="${sums["$student"]:-0}"; n="${counts["$student"]:-0}"
@@ -270,9 +273,10 @@ ranking() {
         done
     } | LC_ALL=C sort -t';' -k1,1nr -k2,2 | while IFS=';' read -r key student rounded n; do
         if ((n>0)); then
-            printf '%-26s %d.%02d      %d\n' "$student" "$((rounded/100))" "$((rounded%100))" "$n"
+            printf -v mean '%d.%02d' "$((rounded/100))" "$((rounded%100))"
+            printf '%-26s  %-15s  %d\n' "$student" "$mean" "$n"
         else
-            printf '%-26s %-9s %d\n' "$student" '-' 0
+            printf '%-26s  %-15s  %d\n' "$student" '-' 0
         fi
     done
 }

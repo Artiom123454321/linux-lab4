@@ -50,13 +50,14 @@ check 'Первая попытка неудачна' 'KaraliusDD' bash main.sh f
 check 'Проверка N попыток возвращает успешный код' 'На момент попытки №2' bash main.sh failed 1 3 A-06-12 2
 check_line_absent 'После второй попытки KaraliusDD сдал' 'KaraliusDD' bash main.sh failed 1 1 A-09-23 2
 check 'Остался несдавший после всех попыток' 'SazonovAD' bash main.sh failed 1 4 A-06-22 0
-check 'Рейтинг по двум предметам: новая средняя' 'SaponGM                    3.60      10' bash main.sh rank A-06-23 0
-check 'Рейтинг по первому предмету: новая средняя' 'IvashutaYA                 3.67      6' bash main.sh rank A-09-23 1
-check 'Рейтинг по второму предмету: новая средняя' 'GorbenkoKY                 3.83      6' bash main.sh rank Ae-21-23 2
+check 'Рейтинг по двум предметам: новая средняя' 'SaponGM                     3.60             10' bash main.sh rank A-06-23 0
+check 'Рейтинг по первому предмету: новая средняя' 'IvashutaYA                  3.67             6' bash main.sh rank A-09-23 1
+check 'Рейтинг по второму предмету: новая средняя' 'GorbenkoKY                  3.83             6' bash main.sh rank Ae-21-23 2
 check 'Шапка рейтинга: студент' 'Студент' bash main.sh rank A-06-23 0
-check 'Шапка рейтинга: средняя и попытки' 'Средняя Попытки' bash main.sh rank A-06-23 0
-check 'По двум предметам: среднее всех попыток' 'UsovPA                     3.43      14' bash main.sh rank A-06-23 0
-check 'Оценки с + и - включены в среднюю' 'NaimanAM                   3.10      10' bash main.sh rank A-09-23 1
+check 'Шапка рейтинга: средняя оценка и попытки' 'Средняя оценка   Попытки' bash main.sh rank A-06-23 0
+check 'Заголовок рейтинга с ровными колонками' 'Студент                     Средняя оценка   Попытки' bash main.sh rank A-06-23 0
+check 'По двум предметам: среднее всех попыток' 'UsovPA                      3.43             14' bash main.sh rank A-06-23 0
+check 'Оценки с + и - включены в среднюю' 'NaimanAM                    3.10             10' bash main.sh rank A-09-23 1
 check 'Средняя по точным группам' 'A-06-21: 282 из 396 (71.21%)' bash main.sh average 0621 A-06-23
 check 'Средняя по году группы' 'ИТОГО (3 групп): 1065 из 1404 (75.85%)' bash main.sh average --year 2023
 check 'Средняя по номеру за все годы' 'ИТОГО (20 групп): 8984 из 12024 (74.71%)' bash main.sh average --number 06
