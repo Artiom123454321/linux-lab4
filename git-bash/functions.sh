@@ -63,17 +63,47 @@ resolve_group_number() {
         fi
     fi
     [[ -n "${key:-}" ]] || { printf 'Ошибка: номер группы «%s» не найден.\n' "$1" >&2; return 1; }
+    # Проверяем не только формат номера, но и наличие хотя бы одной группы.
+    local exists=0
+    for path in "$GROUP_DIR/$key"-??; do
+        if [[ -f "$path" ]]; then exists=1; break; fi
+    done
+    ((exists)) || { printf 'Ошибка: номер группы «%s» не найден.\n' "$1" >&2; return 1; }
     printf '%s\n' "$key"
 }
 
 resolve_year() {
-    local year="$1"
-    if [[ "$year" =~ ^20([0-9]{2})$ ]]; then
-        printf '%s\n' "${BASH_REMATCH[1]}"
-    elif [[ "$year" =~ ^[0-9]{2}$ ]]; then
-        printf '%s\n' "$year"
+    local input="$1" year path exists=0
+    if [[ "$input" =~ ^20([0-9]{2})$ ]]; then
+        year="${BASH_REMATCH[1]}"
+    elif [[ "$input" =~ ^[0-9]{2}$ ]]; then
+        year="$input"
     else
         printf 'Ошибка: год группы задаётся как 23 или 2023.\n' >&2
+        return 1
+    fi
+    # Проверка нужна уже при вводе параметра, а не после остальных запросов.
+    for path in "$GROUP_DIR"/*-"$year"; do
+        if [[ -f "$path" ]]; then exists=1; break; fi
+    done
+    ((exists)) || { printf 'Ошибка: для года %s нет групп.\n' "$input" >&2; return 1; }
+    printf '%s\n' "$year"
+}
+
+# Не продолжать расчёты при пустом составе группы.
+require_students() {
+    local group="$1" count="$2"
+    ((count>0)) || { printf 'Ошибка: в группе %s нет студентов.\n' "$group" >&2; return 1; }
+}
+
+# В каждой записи о попытке должна быть понятная оценка, в том числе с +/-. 
+# Ошибочные данные нельзя молча пропускать: это искажает рейтинг и список должников.
+validate_data_grade() {
+    local grade="$1" group="$2" student="$3" subject="$4" test="$5"
+    if [[ ! "$grade" =~ ^[2-5][+-]*$ ]]; then
+        [[ -n "$grade" ]] || grade='(пусто)'
+        printf 'Ошибка: некорректная оценка «%s» (группа %s, студент %s, предмет %s, тест %s).\n' \
+            "$grade" "$group" "$student" "$subject" "$test" >&2
         return 1
     fi
 }
@@ -133,13 +163,23 @@ worst_attendance() {
         [[ -n "$student" ]] || continue
         students+=("$student"); roster["$student"]=1
     done < "$GROUP_DIR/$group"
+    require_students "$group" "${#students[@]}" || return 1
     for subject in "${SUBJECTS[@]}"; do
         path="$DATA/$subject/$group-attendance"
         [[ -f "$path" ]] || { printf 'Ошибка: отсутствует файл %s\n' "$path" >&2; return 1; }
+        local expected_length=-1 length
         while read -r student bits extra || [[ -n "$student" ]]; do
             bits="${bits%$'\r'}"
             [[ -v 'roster[$student]' ]] || continue
             [[ "$bits" =~ ^[01]+$ ]] || { printf 'Ошибка: некорректная посещаемость %s\n' "$student" >&2; return 1; }
+            length=${#bits}
+            if ((expected_length<0)); then
+                expected_length=$length
+            elif ((length != expected_length)); then
+                printf 'Ошибка: у студентов разное число занятий (%s / %s: %d вместо %d).\n' \
+                    "$group" "$subject" "$length" "$expected_length" >&2
+                return 1
+            fi
             attend_bits["$subject|$student"]="$bits"
         done < "$path"
     done
@@ -185,26 +225,24 @@ scan_test() {
     [[ -f "$file" ]] || { printf 'Ошибка: нет файла теста %s\n' "$file" >&2; return 1; }
     if ((limit>0)); then
         # Сортировка по ФИО и дате. При одинаковых датах сохранён порядок файла.
-        while IFS=';' read -r g student date correct grade || [[ -n "$grade" ]]; do
+        while IFS=';' read -r g student date correct grade || [[ -n "$g$student$date$correct$grade" ]]; do
             grade="${grade%$'\r'}"
             [[ "$g" == "$group" && -v 'roster_ref[$student]' ]] || continue
+            validate_data_grade "$grade" "$group" "$student" "$subject" "$test" || return 1
             counts_ref["$student"]=$(( ${counts_ref["$student"]:-0} + 1 ))
             ((counts_ref["$student"]<=limit)) || continue
-            if [[ "$grade" =~ ^([2-5])[+-]*$ ]]; then
-                base="${BASH_REMATCH[1]}"; key="$prefix$student"
-                previous="${scores_ref["$key"]:-0}"
-                ((base>=3 && base>previous)) && scores_ref["$key"]="$base"
-            fi
+            base="${grade:0:1}"; key="$prefix$student"
+            previous="${scores_ref["$key"]:-0}"
+            if ((base>=3 && base>previous)); then scores_ref["$key"]="$base"; fi
         done < <(LC_ALL=C sort -s -t';' -k2,2 -k3,3 "$file")
     else
-        while IFS=';' read -r g student date correct grade || [[ -n "$grade" ]]; do
+        while IFS=';' read -r g student date correct grade || [[ -n "$g$student$date$correct$grade" ]]; do
             grade="${grade%$'\r'}"
             [[ "$g" == "$group" && -v 'roster_ref[$student]' ]] || continue
-            if [[ "$grade" =~ ^([2-5])[+-]*$ ]]; then
-                base="${BASH_REMATCH[1]}"; key="$prefix$student"
-                previous="${scores_ref["$key"]:-0}"
-                ((base>=3 && base>previous)) && scores_ref["$key"]="$base"
-            fi
+            validate_data_grade "$grade" "$group" "$student" "$subject" "$test" || return 1
+            base="${grade:0:1}"; key="$prefix$student"
+            previous="${scores_ref["$key"]:-0}"
+            if ((base>=3 && base>previous)); then scores_ref["$key"]="$base"; fi
         done < "$file"
     fi
     return 0
@@ -224,6 +262,7 @@ not_passed() {
         [[ -n "$student" ]] || continue
         students+=("$student"); roster["$student"]=1
     done < "$GROUP_DIR/$group"
+    require_students "$group" "${#students[@]}" || return 1
     scan_test "$group" "$subject" "$test" "$limit" scores attempt_counts roster '' || return 1
     printf 'Предмет: %s\nТест: %s\nГруппа: %s\n' "$subject" "$test" "$group"
     if ((limit>0)); then printf 'На момент попытки №%s (по дате)\n' "$limit"; else echo 'За все попытки'; fi
@@ -251,18 +290,18 @@ ranking() {
         [[ -n "$student" ]] || continue
         students+=("$student"); roster["$student"]=1
     done < "$GROUP_DIR/$group"
+    require_students "$group" "${#students[@]}" || return 1
     for subject in "${subjects[@]}"; do
         for test in 1 2 3 4; do
             path="$DATA/$subject/tests/TEST-$test"
             [[ -f "$path" ]] || { printf 'Ошибка: нет файла теста %s\n' "$path" >&2; return 1; }
-            while IFS=';' read -r g student date correct grade || [[ -n "$grade" ]]; do
+            while IFS=';' read -r g student date correct grade || [[ -n "$g$student$date$correct$grade" ]]; do
                 grade="${grade%$'\r'}"
                 [[ "$g" == "$group" && -v 'roster[$student]' ]] || continue
-                if [[ "$grade" =~ ^([2-5])[+-]*$ ]]; then
-                    base="${BASH_REMATCH[1]}"
-                    sums["$student"]=$(( ${sums["$student"]:-0} + base ))
-                    counts["$student"]=$(( ${counts["$student"]:-0} + 1 ))
-                fi
+                validate_data_grade "$grade" "$group" "$student" "$subject" "$test" || return 1
+                base="${grade:0:1}"
+                sums["$student"]=$(( ${sums["$student"]:-0} + base ))
+                counts["$student"]=$(( ${counts["$student"]:-0} + 1 ))
             done < "$path"
         done
     done
@@ -309,7 +348,9 @@ calculate_group_attendance() {
         [[ -n "$student" ]] || continue
         roster["$student"]=1; ((roster_count+=1))
     done < "$GROUP_DIR/$group"
+    require_students "$group" "$roster_count" || return 1
     for subject in "${selected_subjects[@]}"; do
+        local expected_length=-1 length
         path="$DATA/$subject/$group-attendance"
         [[ -f "$path" ]] || { printf 'Ошибка: отсутствует файл %s\n' "$path" >&2; return 1; }
         local count=0
@@ -317,6 +358,14 @@ calculate_group_attendance() {
             bits="${bits%$'\r'}"
             [[ -v 'roster[$student]' ]] || continue
             [[ "$bits" =~ ^[01]+$ ]] || { printf 'Ошибка: некорректная посещаемость %s\n' "$student" >&2; return 1; }
+            length=${#bits}
+            if ((expected_length<0)); then
+                expected_length=$length
+            elif ((length != expected_length)); then
+                printf 'Ошибка: у студентов разное число занятий (%s / %s: %d вместо %d).\n' \
+                    "$group" "$subject" "$length" "$expected_length" >&2
+                return 1
+            fi
             [[ -v 'seen[$subject|$student]' ]] && continue
             seen["$subject|$student"]=1; ((count+=1))
             ones="${bits//0/}"          # номера занятий не нужны — только количество
